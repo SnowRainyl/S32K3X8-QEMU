@@ -8,6 +8,7 @@
 #include "hw/boards.h"
 #include "hw/arm/armv7m.h"
 #include "hw/sysbus.h"
+#include "net/can_emu.h"
 
 // Define memory sizes
 #define S32K3X8EVB_FLASH_SIZE (4 * MiB)
@@ -25,8 +26,9 @@
 #define VECTOR_TABLE_BASE S32K3_FLASH_BASE
 
 
-// Number of LPSPI instances
+// Number of LPSPI/FlexCAN instances
 #define S32K3X8_LPSPI_COUNT 6
+#define S32K3X8_CAN_COUNT   8
 
 // Board state structure 
 typedef struct S32K3X8EVBState {
@@ -34,6 +36,8 @@ typedef struct S32K3X8EVBState {
     ARMv7MState armv7m;
     DeviceState *uart;
     DeviceState *lpspi[S32K3X8_LPSPI_COUNT];
+    DeviceState *flexcan[S32K3X8_CAN_COUNT];
+    CanBusState *canbus[S32K3X8_CAN_COUNT];
 } S32K3X8EVBState;
 
 // Declare instance checker macros

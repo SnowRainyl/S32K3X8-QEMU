@@ -10,6 +10,7 @@
 #include "hw/arm/s32k3x8evb.h"
 #include "hw/char/s32k3x8_uart.h"
 #include "hw/ssi/s32k358_spi.h"
+#include "hw/net/s32k3x8_flexcan.h"
 #include "hw/arm/boot.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-clock.h"
@@ -93,6 +94,26 @@
 #define S32K3_LPSPI3_IRQ         72
 #define S32K3_LPSPI4_IRQ         73
 #define S32K3_LPSPI5_IRQ         74
+
+/* FlexCAN instances used by this machine: CAN0..CAN7 (S32K358). */
+#define S32K3_FLEXCAN0_BASE      (S32K3_PERIPH_BASE + 0x304000) /* 0x40304000 */
+#define S32K3_FLEXCAN1_BASE      (S32K3_PERIPH_BASE + 0x308000) /* 0x40308000 */
+#define S32K3_FLEXCAN2_BASE      (S32K3_PERIPH_BASE + 0x30C000) /* 0x4030C000 */
+#define S32K3_FLEXCAN3_BASE      (S32K3_PERIPH_BASE + 0x310000) /* 0x40310000 */
+#define S32K3_FLEXCAN4_BASE      (S32K3_PERIPH_BASE + 0x314000) /* 0x40314000 */
+#define S32K3_FLEXCAN5_BASE      (S32K3_PERIPH_BASE + 0x318000) /* 0x40318000 */
+#define S32K3_FLEXCAN6_BASE      (S32K3_PERIPH_BASE + 0x31C000) /* 0x4031C000 */
+#define S32K3_FLEXCAN7_BASE      (S32K3_PERIPH_BASE + 0x320000) /* 0x40320000 */
+
+/* Message Buffer interrupt line 0-31 for CAN0..CAN7. */
+#define S32K3_FLEXCAN0_MB_IRQ    110
+#define S32K3_FLEXCAN1_MB_IRQ    114
+#define S32K3_FLEXCAN2_MB_IRQ    117
+#define S32K3_FLEXCAN3_MB_IRQ    120
+#define S32K3_FLEXCAN4_MB_IRQ    122
+#define S32K3_FLEXCAN5_MB_IRQ    124
+#define S32K3_FLEXCAN6_MB_IRQ    126
+#define S32K3_FLEXCAN7_MB_IRQ    128
 
 /*Memory mapping initialization function*/
 static void s32k3x8_initialize_memory_regions(MemoryRegion *system_memory)
@@ -233,6 +254,63 @@ static void s32k3x8_init_lpspi(S32K3X8EVBState *s, MemoryRegion *system_memory,
     qemu_log_mask(CPU_LOG_INT, "LPSPI devices initialized successfully\n");
 }
 
+static void s32k3x8_init_flexcan(S32K3X8EVBState *s, ARMv7MState *armv7m)
+{
+    static const hwaddr flexcan_bases[S32K3X8_CAN_COUNT] = {
+        S32K3_FLEXCAN0_BASE,
+        S32K3_FLEXCAN1_BASE,
+        S32K3_FLEXCAN2_BASE,
+        S32K3_FLEXCAN3_BASE,
+        S32K3_FLEXCAN4_BASE,
+        S32K3_FLEXCAN5_BASE,
+        S32K3_FLEXCAN6_BASE,
+        S32K3_FLEXCAN7_BASE,
+    };
+    static const int flexcan_mb_irq[S32K3X8_CAN_COUNT] = {
+        S32K3_FLEXCAN0_MB_IRQ,
+        S32K3_FLEXCAN1_MB_IRQ,
+        S32K3_FLEXCAN2_MB_IRQ,
+        S32K3_FLEXCAN3_MB_IRQ,
+        S32K3_FLEXCAN4_MB_IRQ,
+        S32K3_FLEXCAN5_MB_IRQ,
+        S32K3_FLEXCAN6_MB_IRQ,
+        S32K3_FLEXCAN7_MB_IRQ,
+    };
+    static const uint32_t flexcan_instance[S32K3X8_CAN_COUNT] = {
+        0, 1, 2, 3, 4, 5, 6, 7
+    };
+    Error *local_err = NULL;
+
+    qemu_log_mask(CPU_LOG_INT,
+                  "Initializing FlexCAN instances CAN0..CAN7\n");
+
+    for (int i = 0; i < S32K3X8_CAN_COUNT; i++) {
+        DeviceState *dev = qdev_new(TYPE_S32K3X8_FLEXCAN);
+        s->flexcan[i] = dev;
+
+        qdev_prop_set_uint32(dev, "can-instance", flexcan_instance[i]);
+        if (s->canbus[i]) {
+            object_property_set_link(OBJECT(dev), "canbus",
+                                     OBJECT(s->canbus[i]), &error_abort);
+        }
+
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err,
+                              "Failed to realize FlexCAN instance %u: ",
+                              flexcan_instance[i]);
+            return;
+        }
+
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, flexcan_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                           qdev_get_gpio_in(DEVICE(armv7m),
+                                            flexcan_mb_irq[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT,
+                  "FlexCAN instances CAN0..CAN7 initialized\n");
+}
+
 
 /*board_init*/
 static void s32k3x8evb_init(MachineState *machine)
@@ -306,10 +384,50 @@ static void s32k3x8evb_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_UART_BASE);
   
     /*12. Initialize LPSPI devices*/
-    s32k3x8_init_lpspi(s, system_memory, sysclk, &s->armv7m);    
+    s32k3x8_init_lpspi(s, system_memory, sysclk, &s->armv7m);
+    /*13. Initialize FlexCAN devices (instances 0..7)*/
+    s32k3x8_init_flexcan(s, &s->armv7m);
     qemu_log_mask(CPU_LOG_INT, "S32K3X8EVB board initialization complete\n"); 
 
 
+}
+
+static void s32k3x8evb_instance_init(Object *obj)
+{
+    S32K3X8EVBState *s = S32K3X8EVB_MACHINE(obj);
+
+    object_property_add_link(obj, "canbus0", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[0],
+                             object_property_allow_set_link,
+                             0);
+    object_property_add_link(obj, "canbus1", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[1],
+                             object_property_allow_set_link,
+                             0);
+    object_property_add_link(obj, "canbus2", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[2],
+                             object_property_allow_set_link,
+                             0);
+    object_property_add_link(obj, "canbus3", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[3],
+                             object_property_allow_set_link,
+                             0);
+    object_property_add_link(obj, "canbus4", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[4],
+                             object_property_allow_set_link,
+                             0);
+    object_property_add_link(obj, "canbus5", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[5],
+                             object_property_allow_set_link,
+                             0);
+    object_property_add_link(obj, "canbus6", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[6],
+                             object_property_allow_set_link,
+                             0);
+    object_property_add_link(obj, "canbus7", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[7],
+                             object_property_allow_set_link,
+                             0);
 }
 
 /*Board class initialization*/
@@ -328,6 +446,7 @@ static const TypeInfo s32k3x8evb_type = {
     .name = MACHINE_TYPE_NAME("s32k3x8evb"),
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(S32K3X8EVBState),
+    .instance_init = s32k3x8evb_instance_init,
     .class_init = s32k3x8evb_class_init,
 };
 
