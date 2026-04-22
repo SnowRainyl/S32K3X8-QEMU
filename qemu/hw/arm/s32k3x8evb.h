@@ -35,6 +35,7 @@ typedef struct S32K3X8EVBState {
     MachineState parent_obj;
     ARMv7MState armv7m;
     DeviceState *uart;
+    DeviceState *dma;
     DeviceState *lpspi[S32K3X8_LPSPI_COUNT];
     DeviceState *flexcan[S32K3X8_CAN_COUNT];
     CanBusState *canbus[S32K3X8_CAN_COUNT];

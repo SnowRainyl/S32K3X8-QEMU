@@ -11,6 +11,7 @@
 #include "hw/char/s32k3x8_uart.h"
 #include "hw/ssi/s32k358_spi.h"
 #include "hw/net/s32k3x8_flexcan.h"
+#include "hw/dma/s32k358_dma.h"
 #include "hw/arm/boot.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-clock.h"
@@ -94,6 +95,9 @@
 #define S32K3_LPSPI3_IRQ         72
 #define S32K3_LPSPI4_IRQ         73
 #define S32K3_LPSPI5_IRQ         74
+
+/* eDMA channel interrupt range: DMATCD0..DMATCD31. */
+#define S32K3_DMATCD0_IRQ        4
 
 /* FlexCAN instances used by this machine: CAN0..CAN7 (S32K358). */
 #define S32K3_FLEXCAN0_BASE      (S32K3_PERIPH_BASE + 0x304000) /* 0x40304000 */
@@ -254,6 +258,35 @@ static void s32k3x8_init_lpspi(S32K3X8EVBState *s, MemoryRegion *system_memory,
     qemu_log_mask(CPU_LOG_INT, "LPSPI devices initialized successfully\n");
 }
 
+static void s32k3x8_init_dma(S32K3X8EVBState *s,
+                             MemoryRegion *system_memory,
+                             ARMv7MState *armv7m)
+{
+    Error *local_err = NULL;
+    DeviceState *dev = qdev_new(TYPE_S32K358_DMA);
+
+    s->dma = dev;
+    object_property_set_link(OBJECT(dev), "memory",
+                             OBJECT(system_memory), &error_abort);
+
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+        error_reportf_err(local_err, "Failed to realize eDMA: ");
+        return;
+    }
+
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, EDMA_REGS_BASE_ADDR);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, EDMA_TCD1_BASE_ADDR);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 2, EDMA_TCD2_BASE_ADDR);
+
+    for (int i = 0; i < S32K358_NUM_DMA_CH; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), i,
+                           qdev_get_gpio_in(DEVICE(armv7m),
+                                            S32K3_DMATCD0_IRQ + i));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "eDMA initialized and mapped\n");
+}
+
 static void s32k3x8_init_flexcan(S32K3X8EVBState *s, ARMv7MState *armv7m)
 {
     static const hwaddr flexcan_bases[S32K3X8_CAN_COUNT] = {
@@ -383,9 +416,11 @@ static void s32k3x8evb_init(MachineState *machine)
     /*11. Map UART - adjusted according to reference manual*/
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_UART_BASE);
   
-    /*12. Initialize LPSPI devices*/
+    /*12. Initialize eDMA device*/
+    s32k3x8_init_dma(s, system_memory, &s->armv7m);
+    /*13. Initialize LPSPI devices*/
     s32k3x8_init_lpspi(s, system_memory, sysclk, &s->armv7m);
-    /*13. Initialize FlexCAN devices (instances 0..7)*/
+    /*14. Initialize FlexCAN devices (instances 0..7)*/
     s32k3x8_init_flexcan(s, &s->armv7m);
     qemu_log_mask(CPU_LOG_INT, "S32K3X8EVB board initialization complete\n"); 
 

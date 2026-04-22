@@ -649,9 +649,9 @@ config S32K3X8_MCU
     default y
     select ARM_V7M 
     select S32K3X8_FLEXCAN
+    select S32K358_DMA
 
 config S32K3X8EVB
     bool 
     default y
     select S32K3X8_MCU
-

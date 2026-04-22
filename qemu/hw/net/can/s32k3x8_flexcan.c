@@ -27,26 +27,41 @@
 #define FLEXCAN_IFLAG2_OFFSET          0x02c
 #define FLEXCAN_IFLAG1_OFFSET          0x030
 #define FLEXCAN_CTRL2_OFFSET           0x034
+#define FLEXCAN_ESR2_OFFSET            0x038
+#define FLEXCAN_RXFGMASK_OFFSET        0x048
+#define FLEXCAN_RXFIR_OFFSET           0x04c
 #define FLEXCAN_IMASK3_OFFSET          0x06c
 #define FLEXCAN_IFLAG3_OFFSET          0x074
 #define FLEXCAN_RXIMR_OFFSET           0x880
+#define FLEXCAN_FDCTRL_OFFSET          0xc00
+#define FLEXCAN_ERFCR_OFFSET           0xc0c
+#define FLEXCAN_ERFIER_OFFSET          0xc10
+#define FLEXCAN_ERFSR_OFFSET           0xc14
+#define FLEXCAN_ERFFEL_OFFSET          0x3000
 
 /* Message buffer RAM (classic CAN payload: 16 bytes / MB). */
 #define FLEXCAN_MB_OFFSET              0x080
 #define FLEXCAN_MB_STRIDE              0x10
 #define FLEXCAN_MB_WORDS               4
 #define FLEXCAN_MB_COUNT               32
+#define FLEXCAN_LEGACY_FILTER_OFFSET   0x0e0
+#define FLEXCAN_ENHANCED_FIFO_OFFSET   0x2000
 
 /* MCR bits used by MCAL startup/stop sequence. */
 #define FLEXCAN_MCR_MAXMB_MASK         0x0000007fU
+#define FLEXCAN_MCR_IDAM_MASK          0x00000300U
+#define FLEXCAN_MCR_IDAM_SHIFT         8
 #define FLEXCAN_MCR_IRMQ_MASK          0x00010000U
 #define FLEXCAN_MCR_LPMACK_MASK        0x00100000U
 #define FLEXCAN_MCR_FRZACK_MASK        0x01000000U
 #define FLEXCAN_MCR_SOFTRST_MASK       0x02000000U
 #define FLEXCAN_MCR_NOTRDY_MASK        0x08000000U
 #define FLEXCAN_MCR_HALT_MASK          0x10000000U
+#define FLEXCAN_MCR_RFEN_MASK          0x20000000U
 #define FLEXCAN_MCR_FRZ_MASK           0x40000000U
 #define FLEXCAN_MCR_MDIS_MASK          0x80000000U
+#define FLEXCAN_CTRL2_RFFN_MASK        0x0f000000U
+#define FLEXCAN_CTRL2_RFFN_SHIFT       24
 
 /* MB CS field bits. */
 #define FLEXCAN_CS_TIMESTAMP_MASK      0x0000ffffU
@@ -65,6 +80,35 @@
 #define FLEXCAN_TX_INACTIVE            0x8U
 #define FLEXCAN_TX_ABORT               0x9U
 #define FLEXCAN_TX_DATA_CODE           0xcU
+
+#define FLEXCAN_IFLAG1_BUF5I_MASK      0x00000020U
+#define FLEXCAN_IFLAG1_BUF6I_MASK      0x00000040U
+#define FLEXCAN_IFLAG1_BUF7I_MASK      0x00000080U
+#define FLEXCAN_IFLAG1_FIFO_MASK       (FLEXCAN_IFLAG1_BUF5I_MASK | \
+                                        FLEXCAN_IFLAG1_BUF6I_MASK | \
+                                        FLEXCAN_IFLAG1_BUF7I_MASK)
+
+#define FLEXCAN_ERFCR_ERFWM_MASK       0x0000001fU
+#define FLEXCAN_ERFCR_NFE_MASK         0x00003f00U
+#define FLEXCAN_ERFCR_NFE_SHIFT        8
+#define FLEXCAN_ERFCR_NEXIF_MASK       0x007f0000U
+#define FLEXCAN_ERFCR_NEXIF_SHIFT      16
+#define FLEXCAN_ERFCR_ERFEN_MASK       0x80000000U
+
+#define FLEXCAN_ERFSR_ERFEL_MASK       0x0000003fU
+#define FLEXCAN_ERFSR_ERFF_MASK        0x00010000U
+#define FLEXCAN_ERFSR_ERFE_MASK        0x00020000U
+#define FLEXCAN_ERFSR_ERFCLR_MASK      0x08000000U
+#define FLEXCAN_ERFSR_ERFDA_MASK       0x10000000U
+#define FLEXCAN_ERFSR_ERFWMI_MASK      0x20000000U
+#define FLEXCAN_ERFSR_ERFOVF_MASK      0x40000000U
+#define FLEXCAN_ERFSR_ERFUFW_MASK      0x80000000U
+#define FLEXCAN_ERFSR_INT_MASK         (FLEXCAN_ERFSR_ERFDA_MASK | \
+                                        FLEXCAN_ERFSR_ERFWMI_MASK | \
+                                        FLEXCAN_ERFSR_ERFOVF_MASK | \
+                                        FLEXCAN_ERFSR_ERFUFW_MASK)
+
+#define FLEXCAN_LEGACY_IDHIT_MASK      0x000001ffU
 
 /* ESR1 is mostly W1C from software perspective. */
 #define FLEXCAN_ESR1_W1C_MASK          0xffffffffU
@@ -106,12 +150,303 @@ static inline uint8_t flexcan_word_swapped_index(uint8_t index)
     return (index & (uint8_t)~3U) + (3U - (index & 3U));
 }
 
+static inline bool s32k3x8_flexcan_legacy_fifo_enabled(
+    const S32K3X8FlexCANState *s)
+{
+    return (s->regs[flexcan_reg_index(FLEXCAN_MCR_OFFSET)] &
+            FLEXCAN_MCR_RFEN_MASK) != 0U;
+}
+
+static inline bool s32k3x8_flexcan_enhanced_fifo_enabled(
+    const S32K3X8FlexCANState *s)
+{
+    return (s->regs[flexcan_reg_index(FLEXCAN_ERFCR_OFFSET)] &
+            FLEXCAN_ERFCR_ERFEN_MASK) != 0U;
+}
+
+static inline uint32_t s32k3x8_flexcan_legacy_filter_count(
+    const S32K3X8FlexCANState *s)
+{
+    uint32_t rffn = (s->regs[flexcan_reg_index(FLEXCAN_CTRL2_OFFSET)] &
+                     FLEXCAN_CTRL2_RFFN_MASK) >> FLEXCAN_CTRL2_RFFN_SHIFT;
+
+    return (rffn + 1U) * 8U;
+}
+
+static void s32k3x8_flexcan_encode_rx_words(S32K3X8FlexCANState *s,
+                                            uint32_t *target,
+                                            const qemu_can_frame *frame)
+{
+    uint32_t frame_id = frame->can_id;
+    bool eff = (frame_id & QEMU_CAN_EFF_FLAG) != 0U;
+    bool rtr = (frame_id & QEMU_CAN_RTR_FLAG) != 0U;
+    uint8_t len = frame->can_dlc;
+    uint8_t *target_bytes = (uint8_t *)&target[2];
+    uint32_t cs = 0;
+
+    if (len > 8U) {
+        len = 8U;
+    }
+
+    memset(&target[2], 0, 2 * sizeof(uint32_t));
+    for (uint8_t i = 0; i < len; i++) {
+        target_bytes[flexcan_word_swapped_index(i)] = frame->data[i];
+    }
+
+    if (eff) {
+        target[1] = frame_id & QEMU_CAN_EFF_MASK;
+        cs |= FLEXCAN_CS_IDE_MASK;
+    } else {
+        target[1] = (frame_id & QEMU_CAN_SFF_MASK) << FLEXCAN_STD_ID_SHIFT;
+    }
+
+    if (rtr) {
+        cs |= FLEXCAN_CS_RTR_MASK;
+    }
+
+    cs |= ((uint32_t)can_len2dlc(len) << FLEXCAN_CS_DLC_SHIFT) &
+          FLEXCAN_CS_DLC_MASK;
+    cs |= ((uint32_t)FLEXCAN_RX_FULL << FLEXCAN_CS_CODE_SHIFT) &
+          FLEXCAN_CS_CODE_MASK;
+    cs |= (uint32_t)s->timestamp++ & FLEXCAN_CS_TIMESTAMP_MASK;
+    target[0] = cs;
+}
+
+static void s32k3x8_flexcan_reset_legacy_fifo(S32K3X8FlexCANState *s)
+{
+    s->legacy_fifo_head = 0;
+    s->legacy_fifo_tail = 0;
+    s->legacy_fifo_count = 0;
+    s->regs[flexcan_reg_index(FLEXCAN_RXFIR_OFFSET)] = 0;
+    s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] &= ~FLEXCAN_IFLAG1_FIFO_MASK;
+}
+
+static void s32k3x8_flexcan_legacy_update_status(S32K3X8FlexCANState *s)
+{
+    uint32_t iflag1 = s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)];
+
+    iflag1 &= ~FLEXCAN_IFLAG1_BUF6I_MASK;
+    if (s->legacy_fifo_count >= (S32K3X8_FLEXCAN_LEGACY_FIFO_CAPACITY - 1U) &&
+        s->legacy_fifo_count > 0U) {
+        iflag1 |= FLEXCAN_IFLAG1_BUF6I_MASK;
+    }
+
+    s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] = iflag1;
+}
+
+static void s32k3x8_flexcan_legacy_present_front(S32K3X8FlexCANState *s)
+{
+    uint32_t iflag1 = s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)];
+
+    if (s->legacy_fifo_count == 0U) {
+        s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] =
+            iflag1 & ~FLEXCAN_IFLAG1_BUF5I_MASK;
+        s->regs[flexcan_reg_index(FLEXCAN_RXFIR_OFFSET)] = 0;
+        return;
+    }
+
+    if (iflag1 & FLEXCAN_IFLAG1_BUF5I_MASK) {
+        return;
+    }
+
+    s32k3x8_flexcan_encode_rx_words(
+        s,
+        flexcan_mb_addr(s, 0),
+        &s->legacy_fifo[s->legacy_fifo_head].frame);
+    s->regs[flexcan_reg_index(FLEXCAN_RXFIR_OFFSET)] =
+        s->legacy_fifo[s->legacy_fifo_head].idhit & FLEXCAN_LEGACY_IDHIT_MASK;
+    s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] |=
+        FLEXCAN_IFLAG1_BUF5I_MASK;
+}
+
+static void s32k3x8_flexcan_legacy_pop(S32K3X8FlexCANState *s)
+{
+    if (s->legacy_fifo_count == 0U) {
+        return;
+    }
+
+    s->legacy_fifo_head =
+        (s->legacy_fifo_head + 1U) % S32K3X8_FLEXCAN_LEGACY_FIFO_CAPACITY;
+    s->legacy_fifo_count--;
+
+    s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] &= ~FLEXCAN_IFLAG1_BUF5I_MASK;
+    s32k3x8_flexcan_legacy_present_front(s);
+    s32k3x8_flexcan_legacy_update_status(s);
+}
+
+static bool s32k3x8_flexcan_legacy_filter_accept(
+    const S32K3X8FlexCANState *s,
+    const qemu_can_frame *frame,
+    uint16_t *idhit)
+{
+    uint32_t mcr = s->regs[flexcan_reg_index(FLEXCAN_MCR_OFFSET)];
+    uint32_t idam = (mcr & FLEXCAN_MCR_IDAM_MASK) >> FLEXCAN_MCR_IDAM_SHIFT;
+
+    if (idam != 0U) {
+        /* IDAM B/C not modeled yet: accept frame and report default hit. */
+        *idhit = 0;
+        return true;
+    }
+
+    uint32_t filter_count = s32k3x8_flexcan_legacy_filter_count(s);
+    uint32_t mask = s->regs[flexcan_reg_index(FLEXCAN_RXFGMASK_OFFSET)];
+    bool frame_eff = (frame->can_id & QEMU_CAN_EFF_FLAG) != 0U;
+    bool frame_rtr = (frame->can_id & QEMU_CAN_RTR_FLAG) != 0U;
+    uint32_t frame_cmp;
+
+    if (frame_eff) {
+        frame_cmp = FLEXCAN_CS_IDE_MASK |
+                    ((frame_rtr ? 1U : 0U) << 31) |
+                    ((frame->can_id & QEMU_CAN_EFF_MASK) << 1);
+    } else {
+        frame_cmp = ((frame_rtr ? 1U : 0U) << 31) |
+                    ((frame->can_id & QEMU_CAN_SFF_MASK) << 19);
+    }
+
+    for (uint32_t i = 0; i < filter_count; i++) {
+        uint32_t entry =
+            s->regs[flexcan_reg_index(FLEXCAN_LEGACY_FILTER_OFFSET + (i * 4U))];
+        bool entry_eff = (entry & FLEXCAN_CS_IDE_MASK) != 0U;
+        bool entry_rtr = (entry & (1U << 31)) != 0U;
+
+        if (entry_eff != frame_eff || entry_rtr != frame_rtr) {
+            continue;
+        }
+        if ((entry & mask) == (frame_cmp & mask)) {
+            *idhit = (uint16_t)i;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool s32k3x8_flexcan_legacy_enqueue(S32K3X8FlexCANState *s,
+                                           const qemu_can_frame *frame)
+{
+    uint16_t idhit;
+
+    if (!s32k3x8_flexcan_legacy_filter_accept(s, frame, &idhit)) {
+        return false;
+    }
+    if (s->legacy_fifo_count >= S32K3X8_FLEXCAN_LEGACY_FIFO_CAPACITY) {
+        s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] |= FLEXCAN_IFLAG1_BUF7I_MASK;
+        return false;
+    }
+
+    s->legacy_fifo[s->legacy_fifo_tail].frame = *frame;
+    s->legacy_fifo[s->legacy_fifo_tail].idhit = idhit;
+    s->legacy_fifo_tail =
+        (s->legacy_fifo_tail + 1U) % S32K3X8_FLEXCAN_LEGACY_FIFO_CAPACITY;
+    s->legacy_fifo_count++;
+
+    s32k3x8_flexcan_legacy_present_front(s);
+    s32k3x8_flexcan_legacy_update_status(s);
+    return true;
+}
+
+static void s32k3x8_flexcan_enhanced_clear_output(S32K3X8FlexCANState *s)
+{
+    uint32_t out_idx = flexcan_reg_index(FLEXCAN_ENHANCED_FIFO_OFFSET);
+
+    memset(&s->regs[out_idx], 0, 16 * sizeof(uint32_t));
+}
+
+static void s32k3x8_flexcan_enhanced_present_front(S32K3X8FlexCANState *s)
+{
+    uint32_t out_idx = flexcan_reg_index(FLEXCAN_ENHANCED_FIFO_OFFSET);
+    uint32_t *out = &s->regs[out_idx];
+
+    s32k3x8_flexcan_enhanced_clear_output(s);
+    if (s->enhanced_fifo_count == 0U) {
+        return;
+    }
+
+    s32k3x8_flexcan_encode_rx_words(
+        s, out, &s->enhanced_fifo[s->enhanced_fifo_head].frame);
+    {
+        uint8_t len = s->enhanced_fifo[s->enhanced_fifo_head].frame.can_dlc;
+        uint32_t idhit_offset = 2U + ((uint32_t)MIN(len, 8U) + 3U) / 4U;
+
+        out[idhit_offset] = s->enhanced_fifo[s->enhanced_fifo_head].idhit & 0x7fU;
+    }
+}
+
+static void s32k3x8_flexcan_enhanced_update_status(S32K3X8FlexCANState *s)
+{
+    uint32_t erfsr = s->regs[flexcan_reg_index(FLEXCAN_ERFSR_OFFSET)] &
+                     (FLEXCAN_ERFSR_ERFOVF_MASK | FLEXCAN_ERFSR_ERFUFW_MASK);
+    uint32_t watermark =
+        s->regs[flexcan_reg_index(FLEXCAN_ERFCR_OFFSET)] & FLEXCAN_ERFCR_ERFWM_MASK;
+
+    erfsr |= s->enhanced_fifo_count & FLEXCAN_ERFSR_ERFEL_MASK;
+    if (s->enhanced_fifo_count == 0U) {
+        erfsr |= FLEXCAN_ERFSR_ERFE_MASK;
+    } else {
+        erfsr |= FLEXCAN_ERFSR_ERFDA_MASK;
+        if (s->enhanced_fifo_count > watermark) {
+            erfsr |= FLEXCAN_ERFSR_ERFWMI_MASK;
+        }
+    }
+    if (s->enhanced_fifo_count >= S32K3X8_FLEXCAN_ENHANCED_FIFO_CAPACITY) {
+        erfsr |= FLEXCAN_ERFSR_ERFF_MASK;
+    }
+
+    s->regs[flexcan_reg_index(FLEXCAN_ERFSR_OFFSET)] = erfsr;
+}
+
+static void s32k3x8_flexcan_reset_enhanced_fifo(S32K3X8FlexCANState *s)
+{
+    s->enhanced_fifo_head = 0;
+    s->enhanced_fifo_tail = 0;
+    s->enhanced_fifo_count = 0;
+    s->regs[flexcan_reg_index(FLEXCAN_ERFSR_OFFSET)] = 0;
+    s32k3x8_flexcan_enhanced_clear_output(s);
+}
+
+static void s32k3x8_flexcan_enhanced_pop(S32K3X8FlexCANState *s)
+{
+    if (s->enhanced_fifo_count == 0U) {
+        s->regs[flexcan_reg_index(FLEXCAN_ERFSR_OFFSET)] |= FLEXCAN_ERFSR_ERFUFW_MASK;
+    } else {
+        s->enhanced_fifo_head =
+            (s->enhanced_fifo_head + 1U) % S32K3X8_FLEXCAN_ENHANCED_FIFO_CAPACITY;
+        s->enhanced_fifo_count--;
+    }
+
+    s32k3x8_flexcan_enhanced_present_front(s);
+    s32k3x8_flexcan_enhanced_update_status(s);
+}
+
+static bool s32k3x8_flexcan_enhanced_enqueue(S32K3X8FlexCANState *s,
+                                             const qemu_can_frame *frame)
+{
+    if (s->enhanced_fifo_count >= S32K3X8_FLEXCAN_ENHANCED_FIFO_CAPACITY) {
+        s->regs[flexcan_reg_index(FLEXCAN_ERFSR_OFFSET)] |= FLEXCAN_ERFSR_ERFOVF_MASK;
+        s32k3x8_flexcan_enhanced_update_status(s);
+        return false;
+    }
+
+    s->enhanced_fifo[s->enhanced_fifo_tail].frame = *frame;
+    s->enhanced_fifo[s->enhanced_fifo_tail].idhit = 0;
+    s->enhanced_fifo_tail =
+        (s->enhanced_fifo_tail + 1U) % S32K3X8_FLEXCAN_ENHANCED_FIFO_CAPACITY;
+    s->enhanced_fifo_count++;
+
+    s32k3x8_flexcan_enhanced_present_front(s);
+    s32k3x8_flexcan_enhanced_update_status(s);
+    return true;
+}
+
 static void s32k3x8_flexcan_update_irq(S32K3X8FlexCANState *s)
 {
-    uint32_t pending = s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] &
-                       s->regs[flexcan_reg_index(FLEXCAN_IMASK1_OFFSET)];
+    uint32_t pending_mb = s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] &
+                          s->regs[flexcan_reg_index(FLEXCAN_IMASK1_OFFSET)];
+    uint32_t pending_erf = s->regs[flexcan_reg_index(FLEXCAN_ERFSR_OFFSET)] &
+                           s->regs[flexcan_reg_index(FLEXCAN_ERFIER_OFFSET)] &
+                           FLEXCAN_ERFSR_INT_MASK;
 
-    qemu_set_irq(s->irq, pending != 0U);
+    qemu_set_irq(s->irq, (pending_mb | pending_erf) != 0U);
 }
 
 static void s32k3x8_flexcan_update_mcr_state(S32K3X8FlexCANState *s)
@@ -142,11 +477,14 @@ static void s32k3x8_flexcan_reset_registers(S32K3X8FlexCANState *s)
 {
     memset(s->regs, 0, sizeof(s->regs));
     s->timestamp = 0;
+    s32k3x8_flexcan_reset_legacy_fifo(s);
+    s32k3x8_flexcan_reset_enhanced_fifo(s);
 
     /* Start disabled with 32 message buffers selected. */
     s->regs[flexcan_reg_index(FLEXCAN_MCR_OFFSET)] = FLEXCAN_MCR_MDIS_MASK |
                                                      31U;
     s->regs[flexcan_reg_index(FLEXCAN_RXMGMASK_OFFSET)] = 0xffffffffU;
+    s->regs[flexcan_reg_index(FLEXCAN_RXFGMASK_OFFSET)] = 0xffffffffU;
     s->regs[flexcan_reg_index(FLEXCAN_RX14MASK_OFFSET)] = 0xffffffffU;
     s->regs[flexcan_reg_index(FLEXCAN_RX15MASK_OFFSET)] = 0xffffffffU;
 
@@ -227,40 +565,7 @@ static void s32k3x8_flexcan_store_rx_frame(S32K3X8FlexCANState *s,
                                            unsigned mb_idx,
                                            const qemu_can_frame *frame)
 {
-    uint32_t *mb = flexcan_mb_addr(s, mb_idx);
-    uint32_t frame_id = frame->can_id;
-    bool eff = (frame_id & QEMU_CAN_EFF_FLAG) != 0U;
-    bool rtr = (frame_id & QEMU_CAN_RTR_FLAG) != 0U;
-    uint8_t len = frame->can_dlc;
-    uint8_t *mb_bytes = (uint8_t *)&mb[2];
-    uint32_t cs = 0;
-
-    if (len > 8U) {
-        len = 8U;
-    }
-
-    memset(&mb[2], 0, 2 * sizeof(uint32_t));
-    for (uint8_t i = 0; i < len; i++) {
-        mb_bytes[flexcan_word_swapped_index(i)] = frame->data[i];
-    }
-
-    if (eff) {
-        mb[1] = frame_id & QEMU_CAN_EFF_MASK;
-        cs |= FLEXCAN_CS_IDE_MASK;
-    } else {
-        mb[1] = (frame_id & QEMU_CAN_SFF_MASK) << FLEXCAN_STD_ID_SHIFT;
-    }
-
-    if (rtr) {
-        cs |= FLEXCAN_CS_RTR_MASK;
-    }
-
-    cs |= ((uint32_t)can_len2dlc(len) << FLEXCAN_CS_DLC_SHIFT) &
-          FLEXCAN_CS_DLC_MASK;
-    cs |= ((uint32_t)FLEXCAN_RX_FULL << FLEXCAN_CS_CODE_SHIFT) &
-          FLEXCAN_CS_CODE_MASK;
-    cs |= (uint32_t)s->timestamp++ & FLEXCAN_CS_TIMESTAMP_MASK;
-    mb[0] = cs;
+    s32k3x8_flexcan_encode_rx_words(s, flexcan_mb_addr(s, mb_idx), frame);
 
     s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] |= (1U << mb_idx);
     s32k3x8_flexcan_update_irq(s);
@@ -294,6 +599,14 @@ static void s32k3x8_flexcan_try_tx_mb(S32K3X8FlexCANState *s, unsigned mb_idx)
 
     if (!s32k3x8_flexcan_is_running(s)) {
         return;
+    }
+
+    if (s32k3x8_flexcan_legacy_fifo_enabled(s)) {
+        uint32_t occupied_last = 5U + (s32k3x8_flexcan_legacy_filter_count(s) / 4U);
+
+        if (mb_idx <= occupied_last) {
+            return;
+        }
     }
 
     if (code == FLEXCAN_TX_ABORT) {
@@ -354,6 +667,14 @@ static uint64_t s32k3x8_flexcan_read(void *opaque, hwaddr addr, unsigned size)
     if (addr == FLEXCAN_TIMER_OFFSET) {
         s->regs[flexcan_reg_index(FLEXCAN_TIMER_OFFSET)] =
             (uint32_t)s->timestamp++;
+
+        if (s32k3x8_flexcan_legacy_fifo_enabled(s) &&
+            (s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] &
+             FLEXCAN_IFLAG1_BUF5I_MASK) == 0U) {
+            s32k3x8_flexcan_legacy_present_front(s);
+            s32k3x8_flexcan_legacy_update_status(s);
+            s32k3x8_flexcan_update_irq(s);
+        }
     }
 
     idx = flexcan_reg_index(addr);
@@ -386,6 +707,9 @@ static void s32k3x8_flexcan_write(void *opaque,
     idx = flexcan_reg_index(addr);
     switch (addr) {
     case FLEXCAN_MCR_OFFSET:
+    {
+        bool old_rfen = s32k3x8_flexcan_legacy_fifo_enabled(s);
+
         s->regs[idx] &= FLEXCAN_MCR_LPMACK_MASK |
                         FLEXCAN_MCR_FRZACK_MASK |
                         FLEXCAN_MCR_NOTRDY_MASK;
@@ -396,8 +720,20 @@ static void s32k3x8_flexcan_write(void *opaque,
             s32k3x8_flexcan_reset_registers(s);
         } else {
             s32k3x8_flexcan_update_mcr_state(s);
+
+            if (s32k3x8_flexcan_legacy_fifo_enabled(s) != old_rfen) {
+                s32k3x8_flexcan_reset_legacy_fifo(s);
+            }
+            if (s32k3x8_flexcan_legacy_fifo_enabled(s) &&
+                s32k3x8_flexcan_enhanced_fifo_enabled(s)) {
+                s->regs[flexcan_reg_index(FLEXCAN_ERFCR_OFFSET)] &=
+                    ~FLEXCAN_ERFCR_ERFEN_MASK;
+                s32k3x8_flexcan_reset_enhanced_fifo(s);
+            }
         }
+        s32k3x8_flexcan_update_irq(s);
         break;
+    }
     case FLEXCAN_IMASK1_OFFSET:
     case FLEXCAN_IMASK2_OFFSET:
     case FLEXCAN_IMASK3_OFFSET:
@@ -405,10 +741,69 @@ static void s32k3x8_flexcan_write(void *opaque,
         s32k3x8_flexcan_update_irq(s);
         break;
     case FLEXCAN_IFLAG1_OFFSET:
+        if (s32k3x8_flexcan_legacy_fifo_enabled(s) &&
+            (v & FLEXCAN_IFLAG1_BUF5I_MASK) &&
+            (s->regs[idx] & FLEXCAN_IFLAG1_BUF5I_MASK)) {
+            s->regs[idx] &= ~(v & ~FLEXCAN_IFLAG1_BUF5I_MASK);
+            s32k3x8_flexcan_legacy_pop(s);
+        } else {
+            s->regs[idx] &= ~v;
+        }
+        if (v & FLEXCAN_IFLAG1_BUF7I_MASK) {
+            s->regs[idx] &= ~FLEXCAN_IFLAG1_BUF7I_MASK;
+        }
+        s32k3x8_flexcan_update_irq(s);
+        break;
     case FLEXCAN_IFLAG2_OFFSET:
     case FLEXCAN_IFLAG3_OFFSET:
         /* W1C. */
         s->regs[idx] &= ~v;
+        s32k3x8_flexcan_update_irq(s);
+        break;
+    case FLEXCAN_ERFCR_OFFSET:
+    {
+        bool old_erfen = s32k3x8_flexcan_enhanced_fifo_enabled(s);
+
+        s->regs[idx] = v;
+        if (s32k3x8_flexcan_legacy_fifo_enabled(s)) {
+            s->regs[idx] &= ~FLEXCAN_ERFCR_ERFEN_MASK;
+        }
+
+        if (s32k3x8_flexcan_enhanced_fifo_enabled(s) != old_erfen) {
+            s32k3x8_flexcan_reset_enhanced_fifo(s);
+            if (s32k3x8_flexcan_enhanced_fifo_enabled(s)) {
+                s32k3x8_flexcan_enhanced_update_status(s);
+            }
+        } else if (s32k3x8_flexcan_enhanced_fifo_enabled(s)) {
+            s32k3x8_flexcan_enhanced_update_status(s);
+        }
+
+        s32k3x8_flexcan_update_irq(s);
+        break;
+    }
+    case FLEXCAN_ERFIER_OFFSET:
+        s->regs[idx] = v;
+        s32k3x8_flexcan_update_irq(s);
+        break;
+    case FLEXCAN_ERFSR_OFFSET:
+        if (v & FLEXCAN_ERFSR_ERFCLR_MASK) {
+            s32k3x8_flexcan_reset_enhanced_fifo(s);
+            if (s32k3x8_flexcan_enhanced_fifo_enabled(s)) {
+                s32k3x8_flexcan_enhanced_update_status(s);
+            }
+        } else if (v & FLEXCAN_ERFSR_ERFDA_MASK) {
+            s->regs[idx] &= ~(v & (FLEXCAN_ERFSR_ERFWMI_MASK |
+                                   FLEXCAN_ERFSR_ERFOVF_MASK |
+                                   FLEXCAN_ERFSR_ERFUFW_MASK));
+            s32k3x8_flexcan_enhanced_pop(s);
+        } else {
+            s->regs[idx] &= ~(v & (FLEXCAN_ERFSR_ERFWMI_MASK |
+                                   FLEXCAN_ERFSR_ERFOVF_MASK |
+                                   FLEXCAN_ERFSR_ERFUFW_MASK));
+            if (s32k3x8_flexcan_enhanced_fifo_enabled(s)) {
+                s32k3x8_flexcan_enhanced_update_status(s);
+            }
+        }
         s32k3x8_flexcan_update_irq(s);
         break;
     case FLEXCAN_ESR1_OFFSET:
@@ -458,18 +853,27 @@ static ssize_t s32k3x8_flexcan_receive(CanBusClientState *client,
         const qemu_can_frame *frame = &frames[fi];
         bool stored = false;
 
-        for (unsigned mb = 0; mb < FLEXCAN_MB_COUNT; mb++) {
-            if (s32k3x8_flexcan_mb_matches_frame(s, mb, frame)) {
-                s32k3x8_flexcan_store_rx_frame(s, mb, frame);
-                stored = true;
-                accepted++;
-                break;
+        if (s32k3x8_flexcan_enhanced_fifo_enabled(s)) {
+            stored = s32k3x8_flexcan_enhanced_enqueue(s, frame);
+        } else if (s32k3x8_flexcan_legacy_fifo_enabled(s)) {
+            stored = s32k3x8_flexcan_legacy_enqueue(s, frame);
+        } else {
+            for (unsigned mb = 0; mb < FLEXCAN_MB_COUNT; mb++) {
+                if (s32k3x8_flexcan_mb_matches_frame(s, mb, frame)) {
+                    s32k3x8_flexcan_store_rx_frame(s, mb, frame);
+                    stored = true;
+                    break;
+                }
             }
         }
 
-        if (!stored) {
+        if (stored) {
+            accepted++;
+        } else {
             /* Frame dropped when no RX_EMPTY MB matches. */
         }
+
+        s32k3x8_flexcan_update_irq(s);
     }
 
     return accepted;

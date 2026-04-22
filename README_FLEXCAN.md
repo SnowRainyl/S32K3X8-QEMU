@@ -41,6 +41,33 @@ cd qemu
 make -j"$(nproc)"
 ```
 
+DMA integration is built automatically with the same commands above (no extra
+configure flags required for `s32k3x8evb`).
+
+## DMA Integration (eDMA)
+The S32K358 eDMA model is integrated from the donor QEMU project into this tree:
+
+- `qemu/hw/dma/s32k358_dma.c`
+- `qemu/include/hw/dma/s32k358_dma.h`
+
+Build/config integration points:
+
+- `qemu/hw/dma/Kconfig`: adds `config S32K358_DMA`
+- `qemu/hw/dma/meson.build`: compiles `s32k358_dma.c` when enabled
+- `qemu/hw/arm/Kconfig`: `S32K3X8_MCU` selects `S32K358_DMA`
+
+Board wiring (`s32k3x8evb`):
+
+- eDMA registers mapped at `0x4020C000`
+- eDMA TCD memory region 1 mapped at `0x40210000`
+- eDMA TCD memory region 2 mapped at `0x40410000`
+- DMA channel IRQs connected as `DMATCD0..31` -> NVIC lines `4..35`
+
+Runtime note:
+
+- No extra QEMU command-line option is required to enable DMA on
+  `-M s32k3x8evb`; the device is instantiated by default during board init.
+
 ## Integration with Host CAN (Virtual)
 Create eight Linux `vcan` interfaces:
 
@@ -62,6 +89,12 @@ sudo ip link set vcan4 up
 sudo ip link set vcan5 up
 sudo ip link set vcan6 up
 sudo ip link set vcan7 up
+```
+
+Run QEMU and connect one FlexCAN controller to one host interface:
+
+```bash
+./qemu-system-arm -object can-bus,id=canbus0   -object can-host-socketcan,id=hostcan0,if=vcan0,canbus=canbus0     -M s32k3x8evb,canbus0=canbus0 -cpu cortex-m7 -kernel ../../Demo/Firmware/inhibt-component.elf -nographic
 ```
 
 Run QEMU and connect each FlexCAN controller to one host interface:
@@ -118,6 +151,8 @@ The model was aligned for MCAL FlexCAN basic flows:
 - `IMASK1`/`IFLAG1` interrupt flow with W1C flag clearing
 - TX complete signaling through MB flags
 - RX delivery from QEMU CAN bus into configured RX-empty mailboxes
+- Legacy RX FIFO emulation (`MCR[RFEN]`, `IFLAG1[BUF5I/BUF6I/BUF7I]`, `RXFIR`)
+- Enhanced RX FIFO emulation (`ERFCR`, `ERFIER`, `ERFSR`, output RAM at `0x2000`)
 
 ## Short MCAL Checklist (FlexCAN_Ip Mapping)
 Use this checklist when setting up `Can_43_FLEXCAN` / `FlexCAN_Ip` controllers for this QEMU machine:
@@ -126,7 +161,7 @@ Use this checklist when setting up `Can_43_FLEXCAN` / `FlexCAN_Ip` controllers f
 2. Route each controller to the matching machine property `canbusX`.
 3. Enable MB interrupt line `0..31` (`FlexCANx_1_IRQn`) for interrupt-driven MB handling.
 4. Use message buffers in `0..31` range for the currently modeled interrupt/data path.
-5. Keep RX FIFO / Enhanced RX FIFO disabled unless you intentionally accept reduced fidelity.
+5. Legacy and Enhanced RX FIFO paths are now emulated; for strict filter fidelity, prefer IDAM format A and validate your filter table assumptions.
 
 | FlexCAN_Ip Instance | Base Address | QEMU Machine Link | MB 0-31 IRQ |
 | --- | --- | --- | --- |
@@ -143,5 +178,6 @@ Use this checklist when setting up `Can_43_FLEXCAN` / `FlexCAN_Ip` controllers f
 - Classic CAN payload path (up to 8 bytes)
 - MB interrupt line `0..31` path
 - No full CAN FD timing/data-path emulation
-- No enhanced/legacy RX FIFO emulation
+- Legacy FIFO filter decoding is exact for IDAM format A; IDAM B/C currently use permissive acceptance.
+- Enhanced FIFO filter matching currently uses permissive acceptance (status, queueing, and interrupts are modeled).
 - No error-state/bus-off behavioral fidelity beyond basic register interactions
