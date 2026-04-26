@@ -36,6 +36,9 @@ static void s32k358_dma_write (void *opaque, hwaddr addr, uint64_t val, unsigned
         case HRS_OFF:
             s->reg_hrs=val;
             break;
+        case EDMA_REGPROT_GCR_OFF:
+            s->regprot_gcr = (uint32_t)val;
+            break;
         default:
             long chNum = (addr - CH_GRPRI_OFF) / 4;
             if( chNum >= 0 && chNum < S32K358_NUM_DMA_CH ){
@@ -56,6 +59,8 @@ static uint64_t s32k358_dma_read (void *opaque, hwaddr addr, unsigned size){
             return s->reg_int;
         case HRS_OFF:
             return s->reg_hrs;
+        case EDMA_REGPROT_GCR_OFF:
+            return s->regprot_gcr;
         default:
             long chNum = (addr - CH_GRPRI_OFF) / 4;
             if( chNum >= 0 && chNum < S32K358_NUM_DMA_CH ){
@@ -344,6 +349,8 @@ static void s32k358_dma_realize(DeviceState *dev, Error **errp){
         error_setg(errp, "s32k358-dma: memory property not set");
         return;
     }
+
+    s->regprot_gcr = 0x0;
 
     // Create address space from memory region
     address_space_init(&s->system_as, s->system_memory, "eDMA-AddressSpace");

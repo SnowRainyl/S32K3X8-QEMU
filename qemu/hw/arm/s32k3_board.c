@@ -12,6 +12,8 @@
 #include "hw/ssi/s32k358_spi.h"
 #include "hw/net/s32k3x8_flexcan.h"
 #include "hw/dma/s32k358_dma.h"
+#include "hw/dma/s32k358_dmamux.h"
+#include "hw/misc/s32k358_mscm.h"
 #include "hw/arm/boot.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-clock.h"
@@ -98,6 +100,13 @@
 
 /* eDMA channel interrupt range: DMATCD0..DMATCD31. */
 #define S32K3_DMATCD0_IRQ        4
+
+/* MSCM base address (CPXNUM at +0x4 used for core ID). */
+#define S32K3_MSCM_BASE          0x40260000U
+
+/* DMAMUX instances used by S32K3x8: DMAMUX_0 and DMAMUX_1. */
+#define S32K3_DMAMUX0_BASE       0x40280000U
+#define S32K3_DMAMUX1_BASE       0x40284000U
 
 /* FlexCAN instances used by this machine: CAN0..CAN7 (S32K358). */
 #define S32K3_FLEXCAN0_BASE      (S32K3_PERIPH_BASE + 0x304000) /* 0x40304000 */
@@ -287,6 +296,46 @@ static void s32k3x8_init_dma(S32K3X8EVBState *s,
     qemu_log_mask(CPU_LOG_INT, "eDMA initialized and mapped\n");
 }
 
+static void s32k3x8_init_mscm(S32K3X8EVBState *s)
+{
+    Error *local_err = NULL;
+    DeviceState *dev = qdev_new(TYPE_S32K358_MSCM);
+
+    s->mscm = dev;
+    qdev_prop_set_uint32(dev, "core-id", 0U);
+
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+        error_reportf_err(local_err, "Failed to realize MSCM: ");
+        return;
+    }
+
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_MSCM_BASE);
+    qemu_log_mask(CPU_LOG_INT, "MSCM initialized and mapped\n");
+}
+
+static void s32k3x8_init_dmamux(S32K3X8EVBState *s)
+{
+    static const hwaddr dmamux_base[S32K3X8_DMAMUX_COUNT] = {
+        S32K3_DMAMUX0_BASE,
+        S32K3_DMAMUX1_BASE,
+    };
+
+    for (int i = 0; i < S32K3X8_DMAMUX_COUNT; i++) {
+        Error *local_err = NULL;
+        DeviceState *dev = qdev_new(TYPE_S32K358_DMAMUX);
+
+        s->dmamux[i] = dev;
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err,
+                              "Failed to realize DMAMUX instance %d: ", i);
+            return;
+        }
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, dmamux_base[i]);
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "DMAMUX0/1 initialized and mapped\n");
+}
+
 static void s32k3x8_init_flexcan(S32K3X8EVBState *s, ARMv7MState *armv7m)
 {
     static const hwaddr flexcan_bases[S32K3X8_CAN_COUNT] = {
@@ -418,9 +467,13 @@ static void s32k3x8evb_init(MachineState *machine)
   
     /*12. Initialize eDMA device*/
     s32k3x8_init_dma(s, system_memory, &s->armv7m);
-    /*13. Initialize LPSPI devices*/
+    /*13. Initialize MSCM*/
+    s32k3x8_init_mscm(s);
+    /*14. Initialize DMAMUX instances*/
+    s32k3x8_init_dmamux(s);
+    /*15. Initialize LPSPI devices*/
     s32k3x8_init_lpspi(s, system_memory, sysclk, &s->armv7m);
-    /*14. Initialize FlexCAN devices (instances 0..7)*/
+    /*16. Initialize FlexCAN devices (instances 0..7)*/
     s32k3x8_init_flexcan(s, &s->armv7m);
     qemu_log_mask(CPU_LOG_INT, "S32K3X8EVB board initialization complete\n"); 
 

@@ -29,13 +29,16 @@
 // Number of LPSPI/FlexCAN instances
 #define S32K3X8_LPSPI_COUNT 6
 #define S32K3X8_CAN_COUNT   8
+#define S32K3X8_DMAMUX_COUNT 2
 
 // Board state structure 
 typedef struct S32K3X8EVBState {
     MachineState parent_obj;
     ARMv7MState armv7m;
     DeviceState *uart;
+    DeviceState *mscm;
     DeviceState *dma;
+    DeviceState *dmamux[S32K3X8_DMAMUX_COUNT];
     DeviceState *lpspi[S32K3X8_LPSPI_COUNT];
     DeviceState *flexcan[S32K3X8_CAN_COUNT];
     CanBusState *canbus[S32K3X8_CAN_COUNT];

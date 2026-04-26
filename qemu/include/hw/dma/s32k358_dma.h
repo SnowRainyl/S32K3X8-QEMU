@@ -83,7 +83,10 @@
 #define S32K358_NUM_DMA_CH 32        // real -> 32 channels; these are 64kB each
 
 #define EDMA_REGS_BASE_ADDR 0x4020C000U
-#define EDMA_REGS_SIZE 0x0000017DU // (380 bytes + 1)
+/* Covers management registers plus REG_PROT GCR mirror window up to TCD base. */
+#define EDMA_REGS_SIZE 0x00004000U
+/* REG_PROT GCR slot used by MCAL: DMA_PROT_MEM(4) * GCR_OFFSET(0x900) = 0x2400. */
+#define EDMA_REGPROT_GCR_OFF 0x00002400U
 
 #define EDMA_TCD1_BASE_ADDR 0x40210000U
 #define EDMA_TCD1_SIZE 0x0003C04FU // (0x4024C04E - 0x40210000 + 1)
@@ -134,6 +137,7 @@ typedef struct S32K358DMAState {
     uint32_t reg_es; // +4h
     uint32_t reg_int; // +8h
     uint32_t reg_hrs; // +Ch
+    uint32_t regprot_gcr; // +0x2400h (REG_PROT GCR mirror)
     uint32_t reg_ch_gpri[S32K358_NUM_DMA_CH];
 
 
