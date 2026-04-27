@@ -87,6 +87,71 @@
 
 ![](./img/spitest.png)
 
+## How to Add a New Device Model (S32K3X8EVB)
+Use this checklist when you want to add a new emulated peripheral to this machine.
+
+1. **Choose the subsystem and create the device files**
+   - Pick the closest QEMU subsystem folder:
+     - `qemu/hw/char/` for UART-like devices
+     - `qemu/hw/ssi/` for SPI-like devices
+     - `qemu/hw/net/can/` for CAN-like devices
+     - `qemu/hw/dma/` for DMA-like devices
+     - `qemu/hw/misc/` for simple MMIO support peripherals
+   - Add the source file (for example `qemu/hw/misc/s32k358_mydev.c`).
+   - Add a header:
+     - Preferred style in this tree: `qemu/include/hw/<subsystem>/...`
+     - Existing legacy models also use local headers in `qemu/hw/<subsystem>/...`
+
+2. **Implement the QOM + SysBus skeleton**
+   - Define a type macro (for example `TYPE_S32K358_MYDEV`).
+   - Define your state struct (`SysBusDevice parent_obj`, `MemoryRegion`, `qemu_irq`, registers/state).
+   - Implement:
+     - MMIO callbacks (`read`/`write`) and `MemoryRegionOps`
+     - `reset`
+     - `instance_init` with `memory_region_init_io()` + `sysbus_init_mmio()` (+ `sysbus_init_irq()` if needed)
+     - `class_init` with `realize`, properties, reset hook
+     - `TypeInfo` + `type_init(...)`
+
+3. **Register the model in build configuration**
+   - Add a config symbol in the subsystem `Kconfig`, for example:
+     - `qemu/hw/misc/Kconfig`
+   - Add the source file in the subsystem `meson.build`, for example:
+     - `qemu/hw/misc/meson.build`
+   - If the device is in CAN subfolder, source is added in:
+     - `qemu/hw/net/can/meson.build`
+
+4. **Enable the symbol for this machine**
+   - In `qemu/hw/arm/Kconfig`, make `S32K3X8_MCU` (or `S32K3X8EVB`) `select` your new symbol.
+
+5. **Wire the device into the S32K3X8 board**
+   - Update `qemu/hw/arm/s32k3_board.c`:
+     - Include your header
+     - Add base address and IRQ constants
+     - Instantiate with `qdev_new(TYPE_...)`
+     - Set required properties (`qdev_prop_set_*` / `object_property_set_link`)
+     - Realize and map (`sysbus_realize_and_unref`, `sysbus_mmio_map`, `sysbus_connect_irq`)
+   - If needed, store a pointer in board state (`qemu/hw/arm/s32k3x8evb.h`).
+   - If you expose machine links/properties, add them in `s32k3x8evb_instance_init()`.
+
+6. **Build and run**
+   ```bash
+   cd qemu
+   ./configure --target-list=arm-softmmu
+   make -j"$(nproc)"
+   ./qemu-system-arm -M s32k3x8evb -nographic -kernel ../Demo/Firmware/firmware.elf
+   ```
+
+7. **Validate guest behavior**
+   - Confirm guest register accesses hit your MMIO handlers.
+   - Confirm interrupt path to NVIC is correct.
+   - If your device uses links (for example CAN bus or memory), verify the property is set before realize.
+
+**Good references in this repository:**
+- `qemu/hw/net/can/s32k3x8_flexcan.c`
+- `qemu/hw/dma/s32k358_dmamux.c`
+- `qemu/hw/misc/s32k358_mscm.c`
+- `qemu/hw/arm/s32k3_board.c`
+
 ## Project Structure
 This is the main directory structure of the cloned repository (`group1/`):
 
@@ -158,4 +223,3 @@ This project, including the source code and any accompanying documents (such as 
 
 * **Attribution (BY):** You must give appropriate credit, provide a link to the license, and indicate if changes were made. You may do so in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
 * **NonCommercial (NC):** You may not use the material for commercial purposes.
-

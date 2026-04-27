@@ -74,6 +74,13 @@
 
 #define FLEXCAN_STD_ID_SHIFT           18
 
+/*
+ * RX FIFO format A table encodes RTR/IDE in bits 31/30 (not MB CS layout).
+ * See FlexCAN_Ip_HwAccess.c: FlexCAN_SetRxFifoFilterFormatA().
+ */
+#define FLEXCAN_FIFO_FILTER_RTR_MASK   (1U << 31)
+#define FLEXCAN_FIFO_FILTER_IDE_MASK   (1U << 30)
+
 /* MB code values used by MCAL. */
 #define FLEXCAN_RX_FULL                0x2U
 #define FLEXCAN_RX_EMPTY               0x4U
@@ -173,6 +180,19 @@ static inline uint32_t s32k3x8_flexcan_legacy_filter_count(
     return (rffn + 1U) * 8U;
 }
 
+static inline uint32_t s32k3x8_flexcan_legacy_filter_mask(
+    const S32K3X8FlexCANState *s,
+    uint32_t filter_idx)
+{
+    uint32_t mcr = s->regs[flexcan_reg_index(FLEXCAN_MCR_OFFSET)];
+
+    if ((mcr & FLEXCAN_MCR_IRMQ_MASK) && (filter_idx < 96U)) {
+        return s->regs[flexcan_reg_index(FLEXCAN_RXIMR_OFFSET) + filter_idx];
+    }
+
+    return s->regs[flexcan_reg_index(FLEXCAN_RXFGMASK_OFFSET)];
+}
+
 static void s32k3x8_flexcan_encode_rx_words(S32K3X8FlexCANState *s,
                                             uint32_t *target,
                                             const qemu_can_frame *frame)
@@ -234,6 +254,21 @@ static void s32k3x8_flexcan_legacy_update_status(S32K3X8FlexCANState *s)
     s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] = iflag1;
 }
 
+static inline void s32k3x8_flexcan_legacy_dma_irq_fallback(S32K3X8FlexCANState *s)
+{
+    uint32_t imask1 = s->regs[flexcan_reg_index(FLEXCAN_IMASK1_OFFSET)];
+
+    if ((imask1 & FLEXCAN_IFLAG1_BUF5I_MASK) == 0U) {
+        /*
+         * MCAL DMA-based legacy FIFO reception expects eDMA requests that are
+         * not modeled yet. Unmask BUF5I so FIFO frames can complete through
+         * the regular ISR callback path.
+         */
+        s->regs[flexcan_reg_index(FLEXCAN_IMASK1_OFFSET)] =
+            imask1 | FLEXCAN_IFLAG1_BUF5I_MASK;
+    }
+}
+
 static void s32k3x8_flexcan_legacy_present_front(S32K3X8FlexCANState *s)
 {
     uint32_t iflag1 = s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)];
@@ -255,6 +290,7 @@ static void s32k3x8_flexcan_legacy_present_front(S32K3X8FlexCANState *s)
         &s->legacy_fifo[s->legacy_fifo_head].frame);
     s->regs[flexcan_reg_index(FLEXCAN_RXFIR_OFFSET)] =
         s->legacy_fifo[s->legacy_fifo_head].idhit & FLEXCAN_LEGACY_IDHIT_MASK;
+    s32k3x8_flexcan_legacy_dma_irq_fallback(s);
     s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] |=
         FLEXCAN_IFLAG1_BUF5I_MASK;
 }
@@ -289,29 +325,23 @@ static bool s32k3x8_flexcan_legacy_filter_accept(
     }
 
     uint32_t filter_count = s32k3x8_flexcan_legacy_filter_count(s);
-    uint32_t mask = s->regs[flexcan_reg_index(FLEXCAN_RXFGMASK_OFFSET)];
     bool frame_eff = (frame->can_id & QEMU_CAN_EFF_FLAG) != 0U;
     bool frame_rtr = (frame->can_id & QEMU_CAN_RTR_FLAG) != 0U;
     uint32_t frame_cmp;
 
     if (frame_eff) {
-        frame_cmp = FLEXCAN_CS_IDE_MASK |
-                    ((frame_rtr ? 1U : 0U) << 31) |
+        frame_cmp = FLEXCAN_FIFO_FILTER_IDE_MASK |
+                    (frame_rtr ? FLEXCAN_FIFO_FILTER_RTR_MASK : 0U) |
                     ((frame->can_id & QEMU_CAN_EFF_MASK) << 1);
     } else {
-        frame_cmp = ((frame_rtr ? 1U : 0U) << 31) |
+        frame_cmp = (frame_rtr ? FLEXCAN_FIFO_FILTER_RTR_MASK : 0U) |
                     ((frame->can_id & QEMU_CAN_SFF_MASK) << 19);
     }
 
     for (uint32_t i = 0; i < filter_count; i++) {
         uint32_t entry =
             s->regs[flexcan_reg_index(FLEXCAN_LEGACY_FILTER_OFFSET + (i * 4U))];
-        bool entry_eff = (entry & FLEXCAN_CS_IDE_MASK) != 0U;
-        bool entry_rtr = (entry & (1U << 31)) != 0U;
-
-        if (entry_eff != frame_eff || entry_rtr != frame_rtr) {
-            continue;
-        }
+        uint32_t mask = s32k3x8_flexcan_legacy_filter_mask(s, i);
         if ((entry & mask) == (frame_cmp & mask)) {
             *idhit = (uint16_t)i;
             return true;
@@ -440,21 +470,36 @@ static bool s32k3x8_flexcan_enhanced_enqueue(S32K3X8FlexCANState *s,
 
 static void s32k3x8_flexcan_update_irq(S32K3X8FlexCANState *s)
 {
+    if (s32k3x8_flexcan_legacy_fifo_enabled(s) && (s->legacy_fifo_count > 0U)) {
+        s32k3x8_flexcan_legacy_dma_irq_fallback(s);
+    }
+
     uint32_t pending_mb = s->regs[flexcan_reg_index(FLEXCAN_IFLAG1_OFFSET)] &
                           s->regs[flexcan_reg_index(FLEXCAN_IMASK1_OFFSET)];
     uint32_t pending_erf = s->regs[flexcan_reg_index(FLEXCAN_ERFSR_OFFSET)] &
                            s->regs[flexcan_reg_index(FLEXCAN_ERFIER_OFFSET)] &
                            FLEXCAN_ERFSR_INT_MASK;
+    uint8_t level = (pending_mb | pending_erf) != 0U;
 
-    qemu_set_irq(s->irq, (pending_mb | pending_erf) != 0U);
+    qemu_set_irq(s->irq, level);
 }
 
 static void s32k3x8_flexcan_update_mcr_state(S32K3X8FlexCANState *s)
 {
     uint32_t mcr = s->regs[flexcan_reg_index(FLEXCAN_MCR_OFFSET)];
     bool mdis = (mcr & FLEXCAN_MCR_MDIS_MASK) != 0U;
-    bool freeze_req = (mcr & FLEXCAN_MCR_FRZ_MASK) &&
-                      (mcr & FLEXCAN_MCR_HALT_MASK);
+    bool freeze_req;
+
+    /*
+     * In low-power disable mode, software expects the module to remain in a
+     * frozen context so FlexCAN_Enable() can wait for FRZACK before exit.
+     */
+    if (mdis) {
+        mcr |= FLEXCAN_MCR_FRZ_MASK | FLEXCAN_MCR_HALT_MASK;
+    }
+
+    freeze_req = (mcr & FLEXCAN_MCR_FRZ_MASK) &&
+                 (mcr & FLEXCAN_MCR_HALT_MASK);
 
     mcr &= ~(FLEXCAN_MCR_LPMACK_MASK |
              FLEXCAN_MCR_FRZACK_MASK |

@@ -21,6 +21,25 @@
 
 #define DB_PRINT(fmt, args...) DB_PRINT_L(1, fmt, ## args)
 
+static inline int s32k358_dma_channel_index(const S32K358DMAState *s,
+                                            const S32K358DMAChannel *ch)
+{
+    return (int)(ch - &s->channels[0]);
+}
+
+static void s32k358_dma_update_channel_irq(S32K358DMAState *s, int ch_num)
+{
+    uint32_t pending = s->channels[ch_num].INT & 0x1U;
+
+    if (pending) {
+        s->reg_int |= (1U << ch_num);
+    } else {
+        s->reg_int &= ~(1U << ch_num);
+    }
+
+    qemu_set_irq(s->irq[ch_num], pending ? 1 : 0);
+}
+
 static void s32k358_dma_write (void *opaque, hwaddr addr, uint64_t val, unsigned size){
     S32K358DMAState* s = S32K358_DMA(opaque);
     switch(addr){
@@ -105,6 +124,7 @@ void s32k358_dma_preemption(S32K358DMAState* s, S32K358DMAChannel* ch){
 }
 void s32k358_dma_transfer(S32K358DMAState* s, S32K358DMAChannel* ch){
     int16_t linkCh = -1;
+    int ch_num = s32k358_dma_channel_index(s, ch);
     DB_PRINT("---[QEMU] TCD Debug:\n\nSADDR:%d\nDADDR:%d\nCITER:%d\nBITER:%d\nNBYTES:%d\nSOFF:%d\nDOFF:%d\nSLAST:%d\nDLAST:%d\n---\n",ch->tcd.SADDR, ch->tcd.DADDR, ch->tcd.CITER, ch->tcd.BITER, ch->tcd.NBYTES, ch->tcd.SOFF, ch->tcd.DOFF, ch->tcd.SLAST_SDA, ch->tcd.DLAST_SGA);
     if ( CH_TCD_GET_ELINK(ch->tcd.CITER) != CH_TCD_GET_ELINK(ch->tcd.BITER) ){
         DB_PRINT("DMA CITER/BITER Configuration error, Aborting...\n");
@@ -167,6 +187,7 @@ void s32k358_dma_transfer(S32K358DMAState* s, S32K358DMAChannel* ch){
     ch->CSR = CH_CSR_SET_DONE(ch->CSR,1);
     ch->CSR = CH_CSR_SET_ACTIVE(ch->CSR,0);
     ch->INT = CH_INT_SET_INT(ch->INT,1);
+    s32k358_dma_update_channel_irq(s, ch_num);
 
     if(CH_TCD_GET_MAJORINT(ch->tcd.CSR)){
         DB_PRINT("Interrupt request to another channel\n");
@@ -178,7 +199,8 @@ void s32k358_dma_transfer(S32K358DMAState* s, S32K358DMAChannel* ch){
 /* Those callbacks are made to set the channels registers (all mapped in TCD memory region) */
 static void s32k358_tcd_write (void *opaque, hwaddr addr, uint64_t val, unsigned size){
     S32K358DMAState* s = S32K358_DMA(opaque);
-    S32K358DMAChannel* ch = &s->channels[CH_GET_NUM(addr)];
+    int ch_num = CH_GET_NUM(addr);
+    S32K358DMAChannel* ch = &s->channels[ch_num];
     #ifdef DEBUG_DMA_TCD
     switch(CH_GET_REG(addr)){
         case CH_CSR_OFF:
@@ -210,13 +232,26 @@ static void s32k358_tcd_write (void *opaque, hwaddr addr, uint64_t val, unsigned
     #endif
     switch(CH_GET_REG(addr)){
         case CH_CSR_OFF:
-            ch->CSR=(uint32_t) val;
+        {
+            uint32_t old = ch->CSR;
+            uint32_t w = (uint32_t)val;
+
+            /* Keep writable control bits and implement W1C semantics. */
+            old = (old & ~0xFU) | (w & 0xFU);      /* ERQ/EARQ/EEI/EBW */
+            if (w & (1U << 30)) {                  /* DONE is W1C */
+                old &= ~(1U << 30);
+            }
+            ch->CSR = old;
             break;
+        }
         case CH_ES_OFF:
-            ch->ES=(uint32_t) val;
+            /* CH_ES is W1C. */
+            ch->ES &= ~((uint32_t)val);
             break;
         case CH_INT_OFF:
-            ch->INT=(uint32_t) val;
+            /* CH_INT is W1C. */
+            ch->INT &= ~((uint32_t)val & 0x1U);
+            s32k358_dma_update_channel_irq(s, ch_num);
             break;
         case CH_SBR_OFF:
             ch->SBR=(uint32_t) val;
