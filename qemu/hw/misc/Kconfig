@@ -152,6 +152,9 @@ config AUX
 config UNIMP
     bool
 
+config S32K358_MSCM
+    bool
+
 config LED
     bool
 
