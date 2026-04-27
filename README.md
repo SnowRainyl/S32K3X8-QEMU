@@ -154,8 +154,9 @@ Acknowledgment:
 
 ## License
 
-This project, including the source code and any accompanying documents (such as presentations, reports, etc.), is distributed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) License**.
+This project is licensed under the **GNU General Public License v2.0 (GPL-2.0)**.
 
-* **Attribution (BY):** You must give appropriate credit, provide a link to the license, and indicate if changes were made. You may do so in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
-* **NonCommercial (NC):** You may not use the material for commercial purposes.
+Since this project is a fork of [QEMU](https://www.qemu.org/), which is distributed under GPL-2.0, all source code in this repository is subject to the same license terms.
+
+You are free to use, modify, and distribute this software under the terms of GPL-2.0. See the [LICENSE](LICENSE) file for the full license text.
 
