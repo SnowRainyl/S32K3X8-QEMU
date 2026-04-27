@@ -154,9 +154,9 @@ Acknowledgment:
 
 ## License
 
-This project is licensed under the **GNU General Public License v2.0 (GPL-2.0)**.
+This project is licensed under the **GNU General Public License v2.0-or-later (GPL-2.0-or-later)**.
 
-Since this project is a fork of [QEMU](https://www.qemu.org/), which is distributed under GPL-2.0, all source code in this repository is subject to the same license terms.
+Since this project is a fork of [QEMU](https://www.qemu.org/), which is distributed under GPL-2.0-or-later, all source code in this repository is subject to the same license terms.
 
-You are free to use, modify, and distribute this software under the terms of GPL-2.0. See the [LICENSE](LICENSE) file for the full license text.
+You are free to use, modify, and distribute this software under the terms of GPL-2.0-or-later. See the [LICENSE](LICENSE) file for the full license text.
 
