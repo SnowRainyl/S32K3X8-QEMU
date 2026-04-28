@@ -109,7 +109,7 @@ static const char* dma_handle_rw_error(MemTxResult result){
         default:
             break;
     }
-    return "Undefinied error";
+    return "Undefined error";
 }
 void s32k358_dma_preemption(S32K358DMAState* s, S32K358DMAChannel* ch){
     /* If the eDMA is idle there is no preemption and the transfer can start immediately */
@@ -132,7 +132,7 @@ void s32k358_dma_transfer(S32K358DMAState* s, S32K358DMAChannel* ch){
     }
     ch->CSR = CH_CSR_SET_DONE(ch->CSR, 0);
     /* Set TCDn_CSR[ACTIVE] to 0 */
-    ch->tcd.CSR -= 1;
+    ch->tcd.CSR &= ~1U;
     ch->CSR = CH_CSR_SET_ACTIVE(ch->CSR, 1);
     /* If the ELINK flag is ENABLED */
     if( CH_TCD_GET_ELINK(ch->tcd.CITER) ){
@@ -198,8 +198,14 @@ void s32k358_dma_transfer(S32K358DMAState* s, S32K358DMAChannel* ch){
 }
 /* Those callbacks are made to set the channels registers (all mapped in TCD memory region) */
 static void s32k358_tcd_write (void *opaque, hwaddr addr, uint64_t val, unsigned size){
-    S32K358DMAState* s = S32K358_DMA(opaque);
-    int ch_num = CH_GET_NUM(addr);
+    S32K358TCDRegionOpaque *ctx = (S32K358TCDRegionOpaque *)opaque;
+    S32K358DMAState* s = ctx->dma;
+    int ch_num = (int)(CH_GET_NUM(addr) + ctx->channel_base);
+    if (ch_num >= S32K358_NUM_DMA_CH) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "s32k358-dma: TCD write ch %d out of range\n", ch_num);
+        return;
+    }
     S32K358DMAChannel* ch = &s->channels[ch_num];
     #ifdef DEBUG_DMA_TCD
     switch(CH_GET_REG(addr)){
@@ -304,9 +310,16 @@ static void s32k358_tcd_write (void *opaque, hwaddr addr, uint64_t val, unsigned
     }
 }
 static uint64_t s32k358_tcd_read (void *opaque, hwaddr addr, unsigned size){
-    S32K358DMAState* s = S32K358_DMA(opaque);
-    S32K358DMAChannel* ch = &s->channels[CH_GET_NUM(addr)];
-    DB_PRINT("TCD Read at channel:%lx reg:%lx\n",CH_GET_NUM(addr), CH_GET_REG(addr));
+    S32K358TCDRegionOpaque *ctx = (S32K358TCDRegionOpaque *)opaque;
+    S32K358DMAState* s = ctx->dma;
+    int ch_num = (int)(CH_GET_NUM(addr) + ctx->channel_base);
+    if (ch_num >= S32K358_NUM_DMA_CH) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "s32k358-dma: TCD read ch %d out of range\n", ch_num);
+        return 0;
+    }
+    S32K358DMAChannel* ch = &s->channels[ch_num];
+    DB_PRINT("TCD Read at channel:%d reg:%lx\n", ch_num, (unsigned long)CH_GET_REG(addr));
     //printf("Read at reg:%x\n",CH_GET_REG(addr));
     switch(CH_GET_REG(addr)){
         case CH_CSR_OFF:
@@ -342,11 +355,13 @@ static uint64_t s32k358_tcd_read (void *opaque, hwaddr addr, unsigned size){
         case CH_TCD_BITER_ELINK:
             return ch->tcd.BITER;
         default:
-            printf("invalid reg");
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "s32k358-dma: invalid TCD reg read at offset 0x%lx\n",
+                          (unsigned long)CH_GET_REG(addr));
             break;
     }
     return 0;
-    }
+}
 static const MemoryRegionOps s32k358_tcd_ops = {
 .read = s32k358_tcd_read,
 .write = s32k358_tcd_write,
@@ -360,10 +375,14 @@ static void s32k358_dma_init(Object* obj){
     memory_region_init_io(&dma->registers, obj, &s32k358_dma_ops, dma, "eDMA engine registers", EDMA_REGS_SIZE);
     sysbus_init_mmio(d, &dma->registers);
 
-    memory_region_init_io(&dma->tcd_region[0], obj, &s32k358_tcd_ops, dma, "eDMA TCDs local memory (first part)", EDMA_TCD1_SIZE);
+    dma->tcd_opaque[0].dma = dma;
+    dma->tcd_opaque[0].channel_base = 0;
+    memory_region_init_io(&dma->tcd_region[0], obj, &s32k358_tcd_ops, &dma->tcd_opaque[0], "eDMA TCDs local memory (first part)", EDMA_TCD1_SIZE);
     sysbus_init_mmio(d, &dma->tcd_region[0]);
 
-    memory_region_init_io(&dma->tcd_region[1], obj, &s32k358_tcd_ops, dma, "eDMA TCDs local memory (second part)", EDMA_TCD2_SIZE);
+    dma->tcd_opaque[1].dma = dma;
+    dma->tcd_opaque[1].channel_base = 16;
+    memory_region_init_io(&dma->tcd_region[1], obj, &s32k358_tcd_ops, &dma->tcd_opaque[1], "eDMA TCDs local memory (second part)", EDMA_TCD2_SIZE);
     sysbus_init_mmio(d, &dma->tcd_region[1]);
 
     for (int i = 0; i < S32K358_NUM_DMA_CH; i++) {

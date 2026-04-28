@@ -124,10 +124,18 @@ typedef struct S32K358DMAChannel{
 
 } S32K358DMAChannel;
 
+typedef struct S32K358DMAState S32K358DMAState;
+
+typedef struct {
+    S32K358DMAState *dma;
+    unsigned channel_base;
+} S32K358TCDRegionOpaque;
+
 typedef struct S32K358DMAState {
     SysBusDevice parent_obj;
     /* The TCDs are stored in an internal memory region of eDMA */
     MemoryRegion tcd_region[2];
+    S32K358TCDRegionOpaque tcd_opaque[2];
     S32K358DMAChannel channels[S32K358_NUM_DMA_CH];
 
     /* Define eDMA configuration */
