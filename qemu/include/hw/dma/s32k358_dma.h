@@ -1,5 +1,5 @@
 /*
- * S32K358 UART
+ * S32K358 eDMA
  *
  * Copyright (c) 2025 Emiliano Salvetto <em1l14n0s@gmail.com>
  * SPDX-License-Identifier: CC-BY-NC-4.0
