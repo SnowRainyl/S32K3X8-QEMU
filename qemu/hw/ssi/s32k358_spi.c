@@ -1,7 +1,8 @@
 /*
  * S32K3X8 LPSPI (Low Power Serial Peripheral Interface) Emulation
  * Based on S32K3xx Reference Manual, Rev. 9, 07/2024
- * 
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"

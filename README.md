@@ -219,7 +219,7 @@ Acknowledgment:
 
 ## License
 
-This project, including the source code and any accompanying documents (such as presentations, reports, etc.), is distributed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) License**.
+This project is licensed under the **GNU General Public License v2.0-or-later (GPL-2.0-or-later)**.
 
 * **Attribution (BY):** You must give appropriate credit, provide a link to the license, and indicate if changes were made. You may do so in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
 * **NonCommercial (NC):** You may not use the material for commercial purposes.

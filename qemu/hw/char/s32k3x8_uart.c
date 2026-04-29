@@ -2,6 +2,8 @@
  * S32K3X8 LPUART Emulation
  *
  * QEMU emulation for the S32K3X8 series MCU LPUART peripheral
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
